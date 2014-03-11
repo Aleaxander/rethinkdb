@@ -122,7 +122,6 @@ private:
     // prematurely bother loading the page if it's going to be deleted.
     // the_page_for_write, the_page_for_read, or the_page_for_read_or_deleted should
     // be used to access this variable.
-    // KSI: Could we encapsulate that rule?
     page_ptr_t page_;
     // True if the block is in a deleted state.  page_ will be null.
     bool is_deleted_;
