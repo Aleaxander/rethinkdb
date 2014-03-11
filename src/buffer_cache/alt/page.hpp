@@ -17,7 +17,8 @@ class page_t;
 class page_loader_t {
 public:
     virtual void inform_page_destroyed(page_t *page) = 0;
-    virtual void inform_load_demanded() = 0;
+    virtual void inform_load_demanded(page_cache_t *page_cache,
+                                      cache_account_t *account) = 0;
 protected:
     virtual ~page_loader_t() { }
 };

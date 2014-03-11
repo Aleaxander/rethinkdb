@@ -17,7 +17,8 @@ public:
         page_is_destroyed_ = true;
     }
 
-    void inform_load_demanded() {
+    void inform_load_demanded(UNUSED page_cache_t *page_cache,
+                              UNUSED cache_account_t *account) {
         // We don't care, coroutines are already loading.
     }
 
@@ -226,7 +227,7 @@ void page_t::add_waiter(page_acq_t *acq, cache_account_t *account) {
     if (buf_.has()) {
         acq->buf_ready_signal_.pulse();
     } else if (loader_ != NULL) {
-        loader_->inform_load_demanded();
+        loader_->inform_load_demanded(acq->page_cache(), account);
     } else if (block_token_.has()) {
         coro_t::spawn_now_dangerously(std::bind(&page_t::load_using_block_token,
                                                 this,
