@@ -12,6 +12,7 @@ namespace alt {
 
 class page_cache_t;
 class page_acq_t;
+class page_loader_t;
 
 // A page_t represents a page (a byte buffer of a specific size), having a definite
 // value known at the construction of the page_t (and possibly later modified
@@ -69,8 +70,8 @@ private:
     void evict_self();
 
     // KSI: Explain this more.
-    // One of destroy_ptr_, buf_, or block_token_ is non-null.
-    bool *destroy_ptr_;
+    // One of loader_, buf_, or block_token_ is non-null.
+    page_loader_t *loader_;
     uint32_t ser_buf_size_;
     scoped_malloc_t<ser_buffer_t> buf_;
     counted_t<standard_block_token_t> block_token_;
