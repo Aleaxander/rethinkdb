@@ -6,19 +6,24 @@
 
 namespace alt {
 
-class page_loader_t {
+class coro_page_loader_t : public page_loader_t {
 public:
-    page_loader_t() : page_is_destroyed_(false) { }
+    coro_page_loader_t() : page_is_destroyed_(false) { }
 
     bool page_is_destroyed() const { return page_is_destroyed_; }
-    void inform_page_destroyed() {
+
+    void inform_page_destroyed(UNUSED page_t *page) {
         rassert(!page_is_destroyed_);
         page_is_destroyed_ = true;
     }
 
+    void inform_load_demanded() {
+        // We don't care, coroutines are already loading.
+    }
+
 private:
     bool page_is_destroyed_;
-    DISABLE_COPYING(page_loader_t);
+    DISABLE_COPYING(coro_page_loader_t);
 };
 
 // We pick a weird that forces the logic and performance to not spaz out if the
@@ -81,7 +86,7 @@ page_t::page_t(page_t *copyee, page_cache_t *page_cache, cache_account_t *accoun
 
 page_t::~page_t() {
     if (loader_ != NULL) {
-        loader_->inform_page_destroyed();
+        loader_->inform_page_destroyed(this);
     }
 }
 
@@ -90,7 +95,7 @@ void page_t::load_from_copyee(page_t *page, page_t *copyee,
                               cache_account_t *account) {
     // This is called using spawn_now_dangerously.  We need to atomically set
     // loader_ and do some other things.
-    page_loader_t loader;
+    coro_page_loader_t loader;
     rassert(page->loader_ == NULL);
     page->loader_ = &loader;
 
@@ -133,7 +138,7 @@ void page_t::load_with_block_id(page_t *page, block_id_t block_id,
                                 cache_account_t *account) {
     // This is called using spawn_now_dangerously.  We need to set
     // loader_ before blocking the coroutine.
-    page_loader_t loader;
+    coro_page_loader_t loader;
     rassert(page->loader_ == NULL);
     page->loader_ = &loader;
 
@@ -221,7 +226,7 @@ void page_t::add_waiter(page_acq_t *acq, cache_account_t *account) {
     if (buf_.has()) {
         acq->buf_ready_signal_.pulse();
     } else if (loader_ != NULL) {
-        // Do nothing, the page is currently being loaded.
+        loader_->inform_load_demanded();
     } else if (block_token_.has()) {
         coro_t::spawn_now_dangerously(std::bind(&page_t::load_using_block_token,
                                                 this,
@@ -237,7 +242,7 @@ void page_t::load_using_block_token(page_t *page, page_cache_t *page_cache,
                                     cache_account_t *account) {
     // This is called using spawn_now_dangerously.  We need to set
     // loader_ before blocking the coroutine.
-    page_loader_t loader;
+    coro_page_loader_t loader;
     rassert(page->loader_ == NULL);
     page->loader_ = &loader;
 

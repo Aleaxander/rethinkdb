@@ -12,7 +12,15 @@ namespace alt {
 
 class page_cache_t;
 class page_acq_t;
-class page_loader_t;
+class page_t;
+
+class page_loader_t {
+public:
+    virtual void inform_page_destroyed(page_t *page) = 0;
+    virtual void inform_load_demanded() = 0;
+protected:
+    virtual ~page_loader_t() { }
+};
 
 // A page_t represents a page (a byte buffer of a specific size), having a definite
 // value known at the construction of the page_t (and possibly later modified
