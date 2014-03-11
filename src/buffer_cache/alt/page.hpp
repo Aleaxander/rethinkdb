@@ -10,6 +10,8 @@ class cache_account_t;
 
 namespace alt {
 
+class current_page_t;
+class index_loader_t;
 class page_cache_t;
 class page_acq_t;
 class page_t;
@@ -28,7 +30,8 @@ protected:
 // in-place, but still a definite known value).
 class page_t {
 public:
-    page_t(block_id_t block_id, page_cache_t *page_cache, cache_account_t *account);
+    page_t(index_loader_t *loader, page_cache_t *page_cache);
+
     page_t(block_size_t block_size, scoped_malloc_t<ser_buffer_t> buf,
            page_cache_t *page_cache);
     page_t(scoped_malloc_t<ser_buffer_t> buf,
@@ -59,11 +62,6 @@ private:
 
     void pulse_waiters_or_make_evictable(page_cache_t *page_cache);
 
-    static void load_with_block_id(page_t *page,
-                                   block_id_t block_id,
-                                   page_cache_t *page_cache,
-                                   cache_account_t *account);
-
     static void load_from_copyee(page_t *page, page_t *copyee,
                                  page_cache_t *page_cache,
                                  cache_account_t *account);
@@ -72,6 +70,7 @@ private:
                                        cache_account_t *account);
 
     friend class page_cache_t;
+    friend class index_loader_t;
     friend class evicter_t;
     friend class eviction_bag_t;
     friend backindex_bag_index_t *access_backindex(page_t *page);

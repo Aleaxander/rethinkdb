@@ -2,6 +2,7 @@
 
 #include "arch/runtime/coroutines.hpp"
 #include "buffer_cache/alt/page_cache.hpp"
+#include "debug.hpp"
 #include "serializer/serializer.hpp"
 
 namespace alt {
@@ -34,18 +35,13 @@ private:
 static const uint64_t READ_AHEAD_ACCESS_TIME = evicter_t::INITIAL_ACCESS_TIME - 1;
 
 
-page_t::page_t(block_id_t block_id, page_cache_t *page_cache,
-               cache_account_t *account)
-    : loader_(NULL),
+page_t::page_t(index_loader_t *loader, page_cache_t *page_cache)
+    : loader_(loader),
       ser_buf_size_(0),
       access_time_(page_cache->evicter().next_access_time()),
       snapshot_refcount_(0) {
+    loader->add_member(this);
     page_cache->evicter().add_not_yet_loaded(this);
-    coro_t::spawn_now_dangerously(std::bind(&page_t::load_with_block_id,
-                                            this,
-                                            block_id,
-                                            page_cache,
-                                            account));
 }
 
 page_t::page_t(block_size_t block_size, scoped_malloc_t<ser_buffer_t> buf,
@@ -133,49 +129,6 @@ void page_t::load_from_copyee(page_t *page, page_t *copyee,
     }
 }
 
-
-void page_t::load_with_block_id(page_t *page, block_id_t block_id,
-                                page_cache_t *page_cache,
-                                cache_account_t *account) {
-    // This is called using spawn_now_dangerously.  We need to set
-    // loader_ before blocking the coroutine.
-    coro_page_loader_t loader;
-    rassert(page->loader_ == NULL);
-    page->loader_ = &loader;
-
-    auto_drainer_t::lock_t lock(page_cache->drainer_.get());
-
-    scoped_malloc_t<ser_buffer_t> buf;
-    counted_t<standard_block_token_t> block_token;
-    {
-        serializer_t *const serializer = page_cache->serializer_;
-        buf = serializer->allocate_buffer();  // Call rmalloc() on our home thread because
-                                     // we'll destroy it on our home thread and
-                                     // tcmalloc likes that.
-        on_thread_t th(serializer->home_thread());
-        block_token = serializer->index_read(block_id);
-        rassert(block_token.has());
-        serializer->block_read(block_token,
-                               buf.get(),
-                               account->get());
-    }
-
-    ASSERT_FINITE_CORO_WAITING;
-    if (loader.page_is_destroyed()) {
-        return;
-    }
-
-    rassert(!page->block_token_.has());
-    rassert(!page->buf_.has());
-    rassert(block_token.has());
-    page->ser_buf_size_ = block_token->block_size().ser_value();
-    page->buf_ = std::move(buf);
-    page->block_token_ = std::move(block_token);
-    page->loader_ = NULL;
-    page_cache->evicter().add_now_loaded_size(page->ser_buf_size_);
-
-    page->pulse_waiters_or_make_evictable(page_cache);
-}
 
 void page_t::add_snapshotter() {
     // This may not block, because it's called at the beginning of

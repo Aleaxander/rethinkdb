@@ -7,6 +7,7 @@
 #include "concurrency/auto_drainer.hpp"
 #include "concurrency/pmap.hpp"
 #include "containers/scoped.hpp"
+#include "debug.hpp"
 #include "serializer/config.hpp"
 #include "unittest/gtest.hpp"
 #include "unittest/mock_file.hpp"

@@ -6,6 +6,7 @@
 
 #include "arch/runtime/coroutines.hpp"
 #include "concurrency/auto_drainer.hpp"
+#include "debug.hpp"
 #include "do_on_thread.hpp"
 #include "serializer/serializer.hpp"
 #include "stl_utils.hpp"
@@ -253,7 +254,7 @@ current_page_t *page_cache_t::page_for_block_id(block_id_t block_id) {
                 "Expected block %" PR_BLOCK_ID " not to be deleted "
                 "(should you have used alt_create_t::create?).",
                 block_id);
-        current_pages_[block_id] = new current_page_t();
+        current_pages_[block_id] = new current_page_t(block_id);
     } else {
         rassert(!current_pages_[block_id]->is_deleted());
     }
@@ -563,9 +564,10 @@ void current_page_acq_t::pulse_write_available() {
     write_cond_.pulse_if_not_already_pulsed();
 }
 
-current_page_t::current_page_t()
+current_page_t::current_page_t(block_id_t block_id)
     : is_deleted_(false),
-      last_write_acquirer_(NULL) {
+      last_write_acquirer_(NULL),
+      loader_(block_id) {
     // Increment the block version so that we can distinguish between unassigned
     // current_page_acq_t::block_version_ values (which are 0) and assigned ones.
     rassert(last_write_acquirer_version_.debug_value() == 0);
@@ -577,7 +579,8 @@ current_page_t::current_page_t(block_size_t block_size,
                                page_cache_t *page_cache)
     : page_(new page_t(block_size, std::move(buf), page_cache), page_cache),
       is_deleted_(false),
-      last_write_acquirer_(NULL) {
+      last_write_acquirer_(NULL),
+      loader_(NULL_BLOCK_ID) {
     // Increment the block version so that we can distinguish between unassigned
     // current_page_acq_t::block_version_ values (which are 0) and assigned ones.
     rassert(last_write_acquirer_version_.debug_value() == 0);
@@ -589,7 +592,8 @@ current_page_t::current_page_t(scoped_malloc_t<ser_buffer_t> buf,
                                page_cache_t *page_cache)
     : page_(new page_t(std::move(buf), token, page_cache), page_cache),
       is_deleted_(false),
-      last_write_acquirer_(NULL) {
+      last_write_acquirer_(NULL),
+      loader_(NULL_BLOCK_ID) {
     // Increment the block version so that we can distinguish between unassigned
     // current_page_acq_t::block_version_ values (which are 0) and assigned ones.
     rassert(last_write_acquirer_version_.debug_value() == 0);
@@ -790,11 +794,12 @@ void current_page_t::mark_deleted(current_page_help_t help) {
     page_.reset();
 }
 
+// RSI: Unused parameter!
 void current_page_t::convert_from_serializer_if_necessary(current_page_help_t help,
-                                                          cache_account_t *account) {
+                                                          UNUSED cache_account_t *account) {
     rassert(!is_deleted_);
     if (!page_.has()) {
-        page_.init(new page_t(help.block_id, help.page_cache, account),
+        page_.init(new page_t(&loader_, help.page_cache),
                    help.page_cache);
     }
 }
@@ -820,6 +825,94 @@ page_t *current_page_t::the_page_for_write(current_page_help_t help,
     guarantee(!is_deleted_);
     convert_from_serializer_if_necessary(help, account);
     return page_.get_page_for_write(help.page_cache, account);
+}
+
+void index_loader_t::add_member(page_t *page) {
+    rassert(pages.end() == std::find(pages.begin(), pages.end(), page));
+    pages.push_back(page);
+}
+
+void index_loader_t::inform_page_destroyed(page_t *page) {
+    auto it = std::find(pages.begin(), pages.end(), page);
+    rassert(it != pages.end());
+    pages.erase(it);
+}
+
+void index_loader_t::inform_load_demanded(page_cache_t *page_cache,
+                                          cache_account_t *account) {
+    if (destroy_ptr != NULL) {
+        // We're already loading the block, do nothing.
+        return;
+    }
+
+    const block_id_t local_block_id = block_id;
+    rassert(block_id != NULL_BLOCK_ID);
+    block_id = NULL_BLOCK_ID;
+
+    coro_t::spawn_now_dangerously(std::bind(index_loader_t::load_with_block_id,
+                                            this,
+                                            local_block_id,
+                                            page_cache,
+                                            account));
+}
+
+void index_loader_t::load_with_block_id(
+        index_loader_t *loader,
+        block_id_t block_id,
+        page_cache_t *page_cache,
+        cache_account_t *account) {
+    // This is called using spawn_now_dangerously.  We need to set
+    // destroy_ptr before blocking the coroutine.
+    bool index_loader_destroyed = false;
+    rassert(loader->destroy_ptr == NULL);
+    loader->destroy_ptr = &index_loader_destroyed;
+
+    auto_drainer_t::lock_t lock(page_cache->drainer_.get());
+
+    serializer_t *const serializer = page_cache->serializer_;
+
+    scoped_malloc_t<ser_buffer_t> buf;
+    counted_t<standard_block_token_t> block_token;
+    {
+        // Call rmalloc() on our home thread because we'll destroy it on our home
+        // thread and tcmalloc likes that.
+        buf = serializer->allocate_buffer();
+        on_thread_t th(serializer->home_thread());
+        block_token = serializer->index_read(block_id);
+        rassert(block_token.has());
+        serializer->block_read(block_token,
+                               buf.get(),
+                               account->get());
+    }
+
+    ASSERT_FINITE_CORO_WAITING;
+    if (index_loader_destroyed) {
+        return;
+    }
+
+    for (size_t i = loader->pages.size(); i-- > 0; ) {
+        page_t *page = loader->pages[i];
+        rassert(!page->block_token_.has());
+        rassert(!page->buf_.has());
+        rassert(block_token.has());
+        page->ser_buf_size_ = block_token->block_size().ser_value();
+        if (i == 0) {
+            page->buf_ = std::move(buf);
+            page->block_token_ = std::move(block_token);
+        } else {
+            scoped_malloc_t<ser_buffer_t> copy = serializer->allocate_buffer();
+            memcpy(copy.get(), buf.get(), serializer->max_block_size().ser_value());
+            page->buf_ = std::move(copy);
+            page->block_token_ = block_token;
+        }
+        page->loader_ = NULL;
+        page_cache->evicter().add_now_loaded_size(page->ser_buf_size_);
+
+        page->pulse_waiters_or_make_evictable(page_cache);
+    }
+
+    loader->destroy_ptr = NULL;
+    loader->pages.clear();
 }
 
 page_txn_t::page_txn_t(page_cache_t *page_cache,

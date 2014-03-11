@@ -74,6 +74,48 @@ namespace alt {
 // known by the current_page_acq_t.
 struct current_page_help_t;
 
+// RSI: We don't handle the deleted-block case correctly -- this attack is a no-go.
+
+// RSI: Rename this to something people will understand.
+class index_loader_t : public page_loader_t {
+public:
+    explicit index_loader_t(block_id_t _block_id)
+        : block_id(_block_id), destroy_ptr(NULL) { }
+    ~index_loader_t() {
+        rassert(pages.empty());
+        if (destroy_ptr != NULL) {
+            *destroy_ptr = true;
+        }
+    }
+
+    void add_member(page_t *page);
+
+private:
+    // This is set to NULL_BLOCK_ID as soon as this object loses its utility
+    // (because we already loaded the block, thus we should never have to load it
+    // again).
+    block_id_t block_id;
+    // This should only ever be of length 0, 1, or 2 (for now), because we shouldn't
+    // be more than one writeable copy of a current page value, ever.
+    // RSI: There's never actually more than the one page, the current_page_t page
+    // (at first).
+    std::vector<page_t *> pages;
+
+    bool *destroy_ptr;
+
+    void inform_page_destroyed(page_t *page);
+    void inform_load_demanded(page_cache_t *page_cache,
+                              cache_account_t *account);
+
+    static void load_with_block_id(index_loader_t *loader,
+                                   block_id_t block_id,
+                                   page_cache_t *page_cache,
+                                   cache_account_t *account);
+    DISABLE_COPYING(index_loader_t);
+};
+
+
+
 class current_page_t {
 public:
     // Constructs a fresh, empty page.
@@ -83,7 +125,7 @@ public:
                    const counted_t<standard_block_token_t> &token,
                    page_cache_t *page_cache);
     // Constructs a page to be loaded from the serializer.
-    current_page_t();
+    explicit current_page_t(block_id_t block_id);
     ~current_page_t();
 
 
@@ -136,6 +178,11 @@ private:
 
     // All list elements have current_page_ != NULL, snapshotted_page_ == NULL.
     intrusive_list_t<current_page_acq_t> acquirers_;
+
+    // KSI: This wastes memory.  The block_id is redundant information we could
+    // surely pass elsewhere, the std::vector is egregiously wasteful, the
+    // coro_loader only somewhat depressing.
+    index_loader_t loader_;
 
     DISABLE_COPYING(current_page_t);
 };
@@ -330,6 +377,7 @@ private:
 
     current_page_t *internal_page_for_new_chosen(block_id_t block_id);
 
+    friend class index_loader_t;
     friend class page_t;
     evicter_t &evicter() { return evicter_; }
 
